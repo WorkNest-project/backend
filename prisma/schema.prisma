@@ -1,0 +1,196 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator docs {
+  provider = "node node_modules/prisma-docs-generator"
+  output   = "./docs"
+  theme    = "dark"
+}
+
+// Перечисление для ролей пользователей
+// - USER: базовый функционал
+// - PRO: расширенный доступ (драг-н-дроп, кастомизация)
+// - ADMIN: управление пользователями и подписками
+enum UserRole {
+  USER
+  PRO
+  ADMIN
+}
+
+/// Модель пользователя, авторизация которого осуществляется через magic link
+model User {
+  id         String   @id @default(cuid())
+  /// Имя пользователя (макс. 255 символов)
+  name       String   @db.VarChar(255)
+  /// Уникальный email для входа с помощью magic Link
+  email      String   @unique
+  /// URL аватара (S3)
+  avatar_url String? /// Ссылка на аватар (формат URL)
+  /// Роль пользователя (по умолчанию USER), остальные роли: PRO, ADMIN
+  role       UserRole @default(USER)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  Board        Board[] /// Доски, к которым привязан пользователь
+  BoardMember  BoardMember[] /// Участие пользователя в досках
+  TaskCreator  Task[]        @relation("TaskCreator") /// Создатель этих задач 
+  TaskAssignee Task[]        @relation("TaskAssignee") /// Задачи, назначенные этому пользователю
+  Comment      Comment[] /// Комментарии, оставленные пользователем
+
+  @@index([email]) /// Индекс на поле email для быстрого поиска
+}
+
+/// Модель рабочей доски, к которой прикрепляются пользователи
+model Board {
+  id          String  @id @default(cuid())
+  /// Название доски (макс. 255 символов)
+  title       String  @db.VarChar(255)
+  /// Описание доски (опционально) до 10000 символов
+  description String? @db.VarChar(10000)
+
+  owner    User   @relation(fields: [owner_id], references: [id])
+  owner_id String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  BoardMember BoardMember[] /// Участники доски
+  Column      Column[] /// Колонки задач на доске
+
+  @@index([title]) /// Индекс на поле title для быстрого поиска
+}
+
+/// Модель участника доски, которая связывает пользователя и доску
+model BoardMember {
+  id String @id @default(cuid())
+
+  user   User   @relation(fields: [userId], references: [id])
+  userId String
+
+  board    Board  @relation(fields: [board_id], references: [id])
+  board_id String
+
+  /// Дата присоединения к доске
+  joinedAt DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([board_id]) /// Индекс на поле board_id для быстрого поиска участников
+}
+
+/// Модель колонки задач, которая крепится к доске.
+/// Каждая колонка может содержать несколько задач.
+model Column {
+  id    String @id @default(cuid())
+  /// Название колонки (макс. 255 символов)
+  title String @db.VarChar(255)
+
+  board    Board  @relation(fields: [board_id], references: [id])
+  board_id String
+
+  order Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  Task Task[]
+
+  @@index([board_id, order]) /// Индекс на board_id и order для быстрого поиска задач в колонке
+}
+
+/// Статус колонки для задач.
+/// Каждая колонка может иметь один статус.
+model ColumnStatus {
+  id         String  @id @default(cuid())
+  /// Название статуса задачи (макс. 255 символов)
+  name       String  @unique @db.VarChar(255)
+  /// Цвет статуса задачи в формате HEX (например, #FF5733)
+  color      String  @db.VarChar(7)
+  /// Иконка статуса задачи (опционально) S3
+  icon       String?
+  /// Порядок отображения статусов (по умолчанию 0)
+  order      Int
+  /// Статус по умолчанию (по умолчанию false)
+  is_default Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  Task Task[]
+
+  @@index([order]) /// Индекс на поле order для быстрого поиска статусов
+}
+
+enum Priority {
+  EMPTY
+  LOW
+  MEDIUM
+  HIGH
+}
+
+/// Модель задачи, которая крепится к колонке.
+/// Каждая задача может находиться только в одной колонке.
+/// Каждая задача может быть назначена одному пользователю или нескольким.
+model Task {
+  id          String  @id @default(cuid())
+  /// Название задачи (макс. 255 символов)
+  title       String  @db.VarChar(255)
+  /// Описание задачи (макс. 10000 символов)
+  description String? @db.VarChar(10000)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// К какой колонке относится задача
+  column    Column? @relation(fields: [column_id], references: [id])
+  column_id String?
+
+  /// Приоритетность задачи (по умолчанию EMPTY) остальные значения: LOW, MEDIUM, HIGH
+  priority Priority @default(EMPTY)
+
+  order Int
+
+  /// Дата дедлайна задачи (опционально)
+  dueDate DateTime?
+
+  /// Пользователь, который создал задачу
+  task_creator    User         @relation("TaskCreator", fields: [task_creator_id], references: [id])
+  task_creator_id String
+  /// Пользователь\и, которому назначена задача (опционально)
+  assignee        User?        @relation("TaskAssignee", fields: [assignee_id], references: [id])
+  assignee_id     String?
+  /// Статус задачи
+  task_status     ColumnStatus @relation(fields: [task_status_id], references: [id])
+  task_status_id  String
+
+  TaskComment Comment[] /// Комментарии к задаче
+
+  @@index([task_status_id]) /// Индекс на task_status_id для быстрого поиска по статусам
+}
+
+/// Модель комментария к задаче, пока что только текст.
+model Comment {
+  id      String @id @default(cuid())
+  /// Текст комментария (макс. 500 символов)
+  content String @db.VarChar(500)
+
+  task    Task   @relation(fields: [task_id], references: [id])
+  task_id String
+
+  user    User   @relation(fields: [user_id], references: [id])
+  user_id String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([task_id]) /// Индекс на поле task_id для быстрого поиска комментариев
+}
